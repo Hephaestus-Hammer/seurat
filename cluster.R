@@ -1,101 +1,80 @@
 #!/usr/bin/env Rscript
+# Clustering module (Seurat-backed) for omnibenchmark: Seurat::FindClusters on the
+# connectivities graph of a *_neighbors.h5 file (UMAP-style affinities from the scanpy
+# and rapids modules, the SNN graph from this module's knn.R).
+#
+# Phases (obkit-events.jsonl):
+#   load     h5 -> sparse graph -> Seurat object
+#   cluster  FindClusters (--flavor: louvain_original, Seurat's default;
+#            louvain_multilevel_refinement; slm; leiden)
+#   write    TSV serialization
+#
+# Output: {name}_clusters.tsv (cell_id, cluster).
 
 suppressPackageStartupMessages({
   library(HDF5Array)
   library(rhdf5)
   library(Seurat)
   library(Matrix)
+  library(jsonlite)
 })
 
-# read_neighbors(): load a CSR neighbors graph from a *_neighbors.h5 file.
-source("src/read_neighbors.R")
-# flavor_algorithm_id(): map a --flavor name to a Seurat FindClusters algorithm id.
-source("src/flavor.R")
-
-# arg parsing
+source("src/read_neighbors.R")  # read_neighbors(): a CSR graph from *_neighbors.h5
+source("src/flavor.R")          # flavor_algorithm_id(): --flavor -> FindClusters algorithm id
 source("src/common/cli.R")
-p <- arg_parser("CLUST module")
-p <- add_base_args(p)                      # --output_dir, --name
-p <- add_stage_args(p, "CLUST")  # the stage I/O contract
-# your own method params — argparser directly (its add_argument requires `help`):
-p <- add_argument(p, "--flavor", type = "character", help = "Clustering algorithm (louvain_original|louvain_multilevel_refinement|slm|leiden)")
-p <- add_argument(p, "--resolution", type = "numeric", help = "Clustering resolution")
-p <- add_argument(p, "--random_seed", type = "integer", help = "Random seed")
-args <- parse_args(p)                      # argparser's own parser
+source("src/obkit_logger.R")
+source("src/phases.R")
 
-# logging
-cat(sprintf("Full command: %s\n", paste(commandArgs(trailingOnly = FALSE), collapse = " ")))
-cat(sprintf("LOG: command line args\n----------------------------------\n"))
-for (i in 1:length(args)) {
-  cat(sprintf("  %s: %s\n", names(args)[i], args[[i]]))
+parse_cluster_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
+  p <- arg_parser("CLUST module")
+  p <- add_base_args(p)            # --output_dir, --name
+  p <- add_stage_args(p, "CLUST")  # --neighbors_h5
+  p <- add_argument(p, "--flavor", type = "character",
+                    help = "Clustering algorithm (louvain_original|louvain_multilevel_refinement|slm|leiden)")
+  p <- add_argument(p, "--resolution", type = "numeric", help = "Clustering resolution")
+  p <- add_argument(p, "--random_seed", type = "integer", help = "Random seed")
+  parse_args(p, argv)
 }
-cat(sprintf("----------------------------------\n"))
 
+main <- function() {
+  args <- parse_cluster_args()
+  cat(sprintf("Full command: %s\n", paste(commandArgs(trailingOnly = FALSE), collapse = " ")))
+  for (k in c("output_dir", "name", "neighbors_h5", "flavor", "resolution", "random_seed"))
+    cat(sprintf("  %s: %s\n", k, format(args[[k]])))
+  algorithm <- flavor_algorithm_id(args$flavor)  # errors on a missing or unknown flavour
 
-# Reproducibility
-set.seed(args$random_seed)
+  dir.create(args$output_dir, showWarnings = FALSE, recursive = TRUE)
+  logger_init(args$output_dir)
+  set.seed(args$random_seed)
 
-# Load neighbors graph into Seurat Object. Cluster on the connectivities graph
-# (UMAP-style affinities); the distances graph is the flat root layout.
-neighbors_mat <- read_neighbors(args$neighbors_h5, group = "connectivities")
+  so <- phase("load", function(attrs) {
+    g <- as.Graph(read_neighbors(args$neighbors_h5, group = "connectivities"))
+    so <- CreateSeuratObject(counts = g, assay = "RNA")
+    so@graphs$neighbors <- g
+    attrs$n_cells <- ncol(g)
+    attrs$connectivities_nnz <- length(g@x)
+    so
+  })
 
-neighbors_graph <- as.Graph(neighbors_mat)
+  so <- phase("cluster", function(attrs) {
+    attrs$flavor <- args$flavor
+    attrs$algorithm <- algorithm
+    attrs$resolution <- args$resolution
+    so <- FindClusters(so, algorithm = algorithm, resolution = args$resolution, graph.name = "neighbors",
+                       random.seed = args$random_seed, verbose = FALSE)
+    attrs$n_clusters <- length(unique(so$seurat_clusters))
+    so
+  })
 
-cat("Neighbors graph dimensions:\n")
-print(dim(neighbors_graph))
-cat("\n")
+  phase("write", function(attrs) {
+    out <- file.path(args$output_dir, paste0(args$name, "_clusters.tsv"))
+    write.table(data.frame(cell_id = colnames(so), cluster = as.character(so$seurat_clusters)),
+                file = out, sep = "\t", quote = FALSE, row.names = FALSE)
+    attrs$path <- out
+    cat(sprintf("  wrote: %s\n", out))
+  })
+}
 
-so <- CreateSeuratObject(
-  counts = neighbors_graph,
-  assay = "RNA"
-)
-
-so@graphs$neighbors <- neighbors_graph
-
-
-# Map the requested --flavor to a Seurat FindClusters algorithm id (errors if
-# --flavor is missing or unknown).
-algorithm_seurat_id <- flavor_algorithm_id(args$flavor)
-
-
-# Run clustering
-so <- FindClusters(
-  so,
-  algorithm = algorithm_seurat_id,
-  resolution = args$resolution,
-  graph.name = "neighbors",
-  random.seed = args$random_seed,
-  verbose = TRUE
-)
-
-cat("Running clustering...\n")
-cat("Selected algorithm:", args$flavor, "\n")
-cat("Algorithm ID:", algorithm_seurat_id, "\n\n")
-
-
-# Extract clusters matrix
-m_clusters <- data.frame(cell_id = colnames(so),
-                         cluster = as.character(so$seurat_clusters))
-
-cat("Cluster matrix dimensions:\n")
-print(dim(m_clusters))
-
-
-# Save cluster matrix as .tsv
-output_file <- file.path(
-  args$output_dir,
-  paste0(args$name, "_clusters.tsv")
-)
-
-cat("Writing output to:\n")
-cat(output_file, "\n\n")
-
-write.table(
-  m_clusters,
-  file = output_file,
-  sep = "\t",
-  quote = FALSE,
-  row.names = FALSE
-)
-
-print(file.info(output_file)[, c("size", "ctime")])
+if (sys.nframe() == 0L) {
+  main()
+}

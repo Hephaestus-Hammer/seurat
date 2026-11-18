@@ -4,6 +4,7 @@ entrypoints:
   select: select.R
   integrate: integrate.R
   pca: pca.R
+  knn: knn.R
   cluster: cluster.R
   normalize: normalize.R
 
