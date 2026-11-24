@@ -33,7 +33,7 @@ parse_cluster_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
                     help = "Clustering algorithm (louvain_original|louvain_multilevel_refinement|slm|leiden)")
   p <- add_argument(p, "--resolution", type = "numeric", help = "Clustering resolution")
   p <- add_argument(p, "--random_seed", type = "integer", help = "Random seed")
-  parse_args(p, argv)
+  parse_args_outputs(p, argv)       # argparser, minus --output id=PATH (api 0.8)
 }
 
 main <- function() {
@@ -43,8 +43,9 @@ main <- function() {
     cat(sprintf("  %s: %s\n", k, format(args[[k]])))
   algorithm <- flavor_algorithm_id(args$flavor)  # errors on a missing or unknown flavour
 
-  dir.create(args$output_dir, showWarnings = FALSE, recursive = TRUE)
-  logger_init(args$output_dir)
+  out <- output_path(args, "clusters_tsv", "_clusters.tsv")  # --output clusters_tsv=PATH (api 0.8)
+  dir.create(dirname(out), showWarnings = FALSE, recursive = TRUE)
+  logger_init(dirname(out))
   set.seed(args$random_seed)
 
   so <- phase("load", function(attrs) {
@@ -67,7 +68,6 @@ main <- function() {
   })
 
   phase("write", function(attrs) {
-    out <- file.path(args$output_dir, paste0(args$name, "_clusters.tsv"))
     write.table(data.frame(cell_id = colnames(so), cluster = as.character(so$seurat_clusters)),
                 file = out, sep = "\t", quote = FALSE, row.names = FALSE)
     attrs$path <- out

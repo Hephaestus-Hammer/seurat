@@ -26,8 +26,6 @@ bioconductor-scran = "*"
 bioconductor-scuttle = "*"
 bioconductor-singlecellexperiment = "*"
 # TODO: add r-obkit
-# denet: the time and memory trace concordance-bench's stage wrapper runs every script under
-denet = ">=0.10.3"
 
 # Bootstrap tooling, kept out of the (heavy) R default env. `pixi run -e bootstrap
 # sync` vendors the shared common/ under src/common/ (the R engine cli.R + the

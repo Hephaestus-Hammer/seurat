@@ -47,7 +47,7 @@ parse_pca_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
   p <- add_argument(p, "--scale", type = "character", default = "false",
                     help = "true: Seurat's default ScaleData (unit variance, clipped); false: centre only")
   p <- add_argument(p, "--scale_max", type = "numeric", default = 10, help = "clip for scaled values (--scale true)")
-  args <- parse_args(p, argv)
+  args <- parse_args_outputs(p, argv)  # argparser, minus --output id=PATH (api 0.8)
   if (!(args$solver %in% c("exact", "approximate")))
     stop("Invalid --solver: ", args$solver, " (valid: exact, approximate)")
   args$scale <- as_flag(args$scale, "--scale")
@@ -95,8 +95,10 @@ main <- function() {
   for (k in c("output_dir", "name", "normalized_selected_h5", "solver", "n_components", "random_seed", "scale"))
     cat(sprintf("  %s: %s\n", k, format(args[[k]])))
 
-  dir.create(args$output_dir, showWarnings = FALSE, recursive = TRUE)
-  logger_init(args$output_dir)
+  out_emb  <- output_path(args, "embedding_tsv", "_embedding.tsv")  # --output id=PATH (api 0.8)
+  out_load <- output_path(args, "loadings_tsv", "_loadings.tsv")
+  dir.create(dirname(out_emb), showWarnings = FALSE, recursive = TRUE)
+  logger_init(dirname(out_emb))
 
   loaded <- phase("load", function(attrs) {
     # TENxMatrix is lazy/disk-backed; as(., dgCMatrix) materializes it in memory.
@@ -117,9 +119,7 @@ main <- function() {
               nrow(res$embedding), ncol(res$embedding), nrow(res$loadings), ncol(res$loadings)))
 
   phase("write", function(attrs) {
-    out_emb <- file.path(args$output_dir, sprintf("%s_embedding.tsv", args$name))
     fwrite(data.table(cell_id = rownames(res$embedding), res$embedding), out_emb, sep = "\t", quote = FALSE)
-    out_load <- file.path(args$output_dir, sprintf("%s_loadings.tsv", args$name))
     fwrite(data.table(gene_id = rownames(res$loadings), res$loadings), out_load, sep = "\t", quote = FALSE)
     attrs$embedding <- out_emb
     attrs$loadings  <- out_load
